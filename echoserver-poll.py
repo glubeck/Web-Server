@@ -4,10 +4,10 @@ Control-C will quit the server.
 """
 
 import argparse
-try:
-    from http_parser.parser import HttpParser
-except ImportError:
-    from http_parser.pyparser import HttpParser
+#try:
+#    from http_parser.parser import HttpParser
+#except ImportError:
+ #   from http_parser.pyparser import HttpParser
 
 from poller import Poller
 

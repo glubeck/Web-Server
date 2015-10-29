@@ -3,19 +3,81 @@ import select
 import socket
 import sys
 import traceback
-try:
-    from http_parser.parser import HttpParser
-except ImportError:
-    from http_parser.pyparser import HttpParser
+import time
+#try:
+#    from http_parser.parser import HttpParser
+#except ImportError:
+#    from http_parser.pyparser import HttpParser
+
+class ParsedRequest:
+    def __init__(self):
+        self.method = "NOVALUE"
+        self.URL = "NOVALUE"
+        self.version = "NOVALUE"
+        self.headerList = []
+    def __str__(self):
+        result = "Request Method: " + self.method + '\r\n'
+        result += "Request URL: " + self.URL + '\r\n'
+        result += "Request Version: " + self.version + '\r\n'
+        result += "Headers: --------------" + '\r\n'
+        for s in self.headerList:
+            result += s + '\r\n'
+        return result
+        
+class Response:
+    def __init__(self):
+        self.version = "NOVERSION"
+        self.time = ""
+        self.statusCode = "NOSTATUS"
+        self.statusPhrase = "NOPHRASE"
+        self.headerLines = ["Server: RADNESSSS"]
+        self.body = ""
+    def __str__(self):
+        result = self.version + ' ' + self.statusCode + ' ' + self.statusPhrase + '\r\n'
+        result += 'Date: ' + self.time + '\r\n'
+        for s in self.headerLines:
+            result += s + '\r\n'
+        result += '\r\n' + self.body
+        return result
+
 
 class Poller:
     """ Polling server """
     def __init__(self,port):
+        print "-----------------------------------------------------------------------"
         self.host = ""
         self.port = port
         self.open_socket()
         self.clients = {}
         self.size = 1024
+        self.configServer()
+
+    def configServer(self):
+        file = open("web.conf")
+        global mediaList
+        hostList = []
+        mediaList = []
+        parameterList = []
+            
+        while 1:
+            line = file.readline()
+            if not line:
+                break
+            list = line.split()
+            if len(list) > 0:
+                type = list[0]
+                item = list[1] + ' ' + list[2]
+                
+                if type == "host":
+                    hostList.append(item)
+                if type == "media":
+                    mediaList.append(item)
+                if type == "parameter":
+                    parameterList.append(item)
+                    
+        #print hostList
+        #print mediaList
+        #print parameterList
 
     def open_socket(self):
         """ Setup the socket for incoming clients """
@@ -67,6 +129,7 @@ class Poller:
             del self.clients[fd]
 
     def handleServer(self):
+		
         # accept as many clients as possible
         while True:
             try:
@@ -95,49 +158,123 @@ class Poller:
 
         if data:
 
-            file = open("web.conf")
-
-            hostList = []
-            mediaList = []
-            parameterList = []
+ 
+            parsedRequest = self.parseHttp(data)
+            print str(parsedRequest)
             
-            while 1:
-                line = file.readline()
-                if not line:
-                    break
-                type = line.split(' ', 1)[0]
-                if type == "host":
-                    hostList.append(line)
-                if type == "media":
-                    mediaList.append(line)
-                if type == "parameter":
-                    parameterList.append(line)
-                    
-            print hostList
-            print mediaList
-            print parameterList
-            p = HttpParser()
-
-            nparsed = p.execute(data, len(data))
+            
+            response = Response()
+            
+            response.version = parsedRequest.version
+            
+            t = time.time()
+            response.time = self.get_time(t)
             
             #if the method or URI is empty... how do I get the URI?
-            if not p.get_method() or not p.get_path():
-                self.clients[fd].send('400 Bad Request\r\n\r\n')
+            if (parsedRequest.method != "GET" and parsedRequest.method != "DELETE") or parsedRequest.URL == "NOVALUE":
+                response.statusCode = "400"
+                response.statusPhrase = "BAD REQUEST"
+                contentType = self.getContentType(parsedRequest)
+                response.headerLines.append("Content-Type: " + str(contentType))
+                response.body = "Bad Request"
+                response.headerLines.append("Content-Length: " + str(len(response.body)))
                 
-            #if web server does not have permission to open requested file
-            #403 Forbidden:
-
-            #if web server cannot find requested file
-            #404 Not Found
+            #if the web server does not implement the requested method
+            if parsedRequest.method == "DELETE":
+                response.statusCode = "501"
+                response.statusPhrase = "NOT IMPLEMENTED"
+                contentType = self.getContentType(parsedRequest)
+                response.headerLines.append("Content-Type: " + str(contentType))
+                response.body = "Not Implemented"
+                response.headerLines.append("Content-Length: " + str(len(response.body)))
 
             #if the web server encounters any other error when trying to open
             #a file 500 Internal Server Error:
 
-            #if the web server does not implement the requested method
-            #501 Not Implemented:
+
             else:
-                self.clients[fd].send(data)
+				
+                contents = "File Not Found"
+                if parsedRequest.URL == "web-server-testing/web/":
+                    parsedRequest.URL = "web-server-testing/web/index.html"
+                
+                try:    
+                    file = open(parsedRequest.URL)
+                    contents = file.read()
+            #if web server cannot find requested file
+            #404 Not Found                    
+                except IOError:
+                    response.statusCode = "404"
+                    response.statusPhrase = "FILE NOT FOUND"
+					
+                
+					
+                contentType = self.getContentType(parsedRequest)
+                response.headerLines.append("Content-Type: " + str(contentType))	   
+                response.body = contents
+                
+            #if web server does not have permission to open requested file
+            #403 Forbidden:
+                if response.body == "Forbidden\n":
+                    response.statusCode = "403"
+                    response.statusPhrase = "FORBIDDEN"
+                    
+                response.headerLines.append("Content-Length: " + str(len(contents)))
+
+                if response.statusCode == "NOSTATUS":
+                    response.statusCode = "200"
+                    response.statusPhrase = "OK"
+                
+            print str(response)
+            
+            self.clients[fd].send(str(response))
+            
         else:
             self.poller.unregister(fd)
             self.clients[fd].close()
             del self.clients[fd]
+
+    def parseHttp(self, request):
+		
+        parsedRequest = ParsedRequest()
+        
+        lineList = request.splitlines()
+        
+        if len(lineList) > 0:
+            requestLineList = lineList[0].split()
+            if len(requestLineList) == 3:
+                parsedRequest.method = requestLineList[0]
+                parsedRequest.URL = "web-server-testing/web" + requestLineList[1]
+                parsedRequest.version = requestLineList[2]
+                
+        if len(lineList) > 2:
+            headLineList = []
+            for i in range(1, len(lineList)):
+                if(lineList[i] == ''):
+                    break
+                headLineList.append(lineList[i])
+			
+            parsedRequest.headerList = headLineList
+                
+        return parsedRequest
+    
+    def getContentType(self, request):
+        if '.' in request.URL:
+            contentType = request.URL.split('.')[1]
+            global mediaList
+            for s in mediaList:
+                generalType = s.split()[0]
+                specificType = s.split()[1]
+                if contentType == generalType:
+                    return specificType
+            return "INVALIDTYPE"
+        else:
+            return "INVALIDTYPE"
+            
+            
+    def get_time(self, t):
+        gmt = time.gmtime(t)
+        format = '%a, %d %b %Y %H:%M:%S GMT'
+        time_string= time.strftime(format, gmt)
+        return time_string 
+		
