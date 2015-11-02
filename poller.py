@@ -5,6 +5,8 @@ import sys
 import traceback
 import time
 
+global cacheDict
+cacheDict = {}
 
 class ParsedRequest:
     def __init__(self):
@@ -155,12 +157,17 @@ class Poller:
             sys.exit()
 
         if data:
+
+            global cacheDict
+
+            if not fd in cacheDict:
+                cacheDict[fd] = ""
+            
+            cacheDict[fd] += data
                 
-            cache += data
-                
-            if cache.endswith("\r\n\r\n"):
+            if cacheDict[fd].endswith("\r\n\r\n"):
                     
-                parsedRequest = self.parseHttp(cache) 
+                parsedRequest = self.parseHttp(cacheDict[fd]) 
                 print str(parsedRequest)
                 
                 response = self.determineResponse(parsedRequest)
@@ -168,7 +175,7 @@ class Poller:
                 print str(response)
                 
                 self.clients[fd].send(str(response))
-                cache = ""
+                cacheDict[fd] = ""
                 
                 
         else:
