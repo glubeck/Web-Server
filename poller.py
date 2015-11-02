@@ -4,10 +4,7 @@ import socket
 import sys
 import traceback
 import time
-#try:
-#    from http_parser.parser import HttpParser
-#except ImportError:
-#    from http_parser.pyparser import HttpParser
+
 
 class ParsedRequest:
     def __init__(self):
@@ -54,7 +51,9 @@ class Poller:
 
     def configServer(self):
         file = open("web.conf")
+        global hostList
         global mediaList
+        global parameterList
         hostList = []
         mediaList = []
         parameterList = []
@@ -69,15 +68,13 @@ class Poller:
                 item = list[1] + ' ' + list[2]
                 
                 if type == "host":
+                    item = item.split()[1]
                     hostList.append(item)
                 if type == "media":
                     mediaList.append(item)
                 if type == "parameter":
                     parameterList.append(item)
                     
-        #print hostList
-        #print mediaList
-        #print parameterList
 
     def open_socket(self):
         """ Setup the socket for incoming clients """
@@ -147,6 +144,7 @@ class Poller:
             self.poller.register(client.fileno(),self.pollmask)
 
     def handleClient(self,fd):
+        cache = ""
         try:
             data = self.clients[fd].recv(self.size)
         except socket.error, (value,message):
@@ -157,78 +155,22 @@ class Poller:
             sys.exit()
 
         if data:
-
- 
-            parsedRequest = self.parseHttp(data)
-            print str(parsedRequest)
-            
-            
-            response = Response()
-            
-            response.version = parsedRequest.version
-            
-            t = time.time()
-            response.time = self.get_time(t)
-            
-            #if the method or URI is empty... how do I get the URI?
-            if (parsedRequest.method != "GET" and parsedRequest.method != "DELETE") or parsedRequest.URL == "NOVALUE":
-                response.statusCode = "400"
-                response.statusPhrase = "BAD REQUEST"
-                contentType = self.getContentType(parsedRequest)
-                response.headerLines.append("Content-Type: " + str(contentType))
-                response.body = "Bad Request"
-                response.headerLines.append("Content-Length: " + str(len(response.body)))
                 
-            #if the web server does not implement the requested method
-            if parsedRequest.method == "DELETE":
-                response.statusCode = "501"
-                response.statusPhrase = "NOT IMPLEMENTED"
-                contentType = self.getContentType(parsedRequest)
-                response.headerLines.append("Content-Type: " + str(contentType))
-                response.body = "Not Implemented"
-                response.headerLines.append("Content-Length: " + str(len(response.body)))
-
-            #if the web server encounters any other error when trying to open
-            #a file 500 Internal Server Error:
-
-
-            else:
-				
-                contents = "File Not Found"
-                if parsedRequest.URL == "web-server-testing/web/":
-                    parsedRequest.URL = "web-server-testing/web/index.html"
+            cache += data
                 
-                try:    
-                    file = open(parsedRequest.URL)
-                    contents = file.read()
-            #if web server cannot find requested file
-            #404 Not Found                    
-                except IOError:
-                    response.statusCode = "404"
-                    response.statusPhrase = "FILE NOT FOUND"
-					
-                
-					
-                contentType = self.getContentType(parsedRequest)
-                response.headerLines.append("Content-Type: " + str(contentType))	   
-                response.body = contents
-                
-            #if web server does not have permission to open requested file
-            #403 Forbidden:
-                if response.body == "Forbidden\n":
-                    response.statusCode = "403"
-                    response.statusPhrase = "FORBIDDEN"
+            if cache.endswith("\r\n\r\n"):
                     
-                response.headerLines.append("Content-Length: " + str(len(contents)))
-
-                if response.statusCode == "NOSTATUS":
-                    response.statusCode = "200"
-                    response.statusPhrase = "OK"
+                parsedRequest = self.parseHttp(cache) 
+                print str(parsedRequest)
                 
-            print str(response)
-            
-            self.clients[fd].send(str(response))
-            
+                response = self.determineResponse(parsedRequest)
+                
+                print str(response)
+                
+                self.clients[fd].send(str(response))
+                cache = ""
+                
+                
         else:
             self.poller.unregister(fd)
             self.clients[fd].close()
@@ -244,7 +186,8 @@ class Poller:
             requestLineList = lineList[0].split()
             if len(requestLineList) == 3:
                 parsedRequest.method = requestLineList[0]
-                parsedRequest.URL = "web-server-testing/web" + requestLineList[1]
+                global hostList
+                parsedRequest.URL = hostList[0] + requestLineList[1]
                 parsedRequest.version = requestLineList[2]
                 
         if len(lineList) > 2:
@@ -277,4 +220,75 @@ class Poller:
         format = '%a, %d %b %Y %H:%M:%S GMT'
         time_string= time.strftime(format, gmt)
         return time_string 
-		
+
+    def determineResponse(self, parsedRequest):
+        response = Response()
+            
+        response.version = parsedRequest.version
+            
+        t = time.time()
+        response.time = self.get_time(t)
+            
+        #if the method or URI is empty... how do I get the URI?
+        if (parsedRequest.method != "GET" and parsedRequest.method != "DELETE") or parsedRequest.URL == "NOVALUE":
+            self.setBadRequestBody(response, parsedRequest)
+                
+        #if the web server does not implement the requested method
+        elif parsedRequest.method == "DELETE":
+            self.setNotImplementedBody(response, parsedRequest)
+
+        else:
+				
+            contents = "File Not Found"
+            if parsedRequest.URL == "web-server-testing/web/":
+                parsedRequest.URL = "web-server-testing/web/index.html"
+                
+            try:    
+                file = open(parsedRequest.URL)
+                contents = file.read()
+                #if web server cannot find requested file
+                #404 Not Found                    
+            except IOError:
+                response.statusCode = "404"
+                response.statusPhrase = "FILE NOT FOUND"
+					
+					
+            contentType = self.getContentType(parsedRequest)
+            response.headerLines.append("Content-Type: " + str(contentType))	   
+            response.body = contents
+            
+            #if web server does not have permission to open requested file
+            #403 Forbidden:
+            if response.body == "Forbidden\n":
+                response.statusCode = "403"
+                response.statusPhrase = "FORBIDDEN"
+                    
+            response.headerLines.append("Content-Length: " + str(len(contents)))
+
+            if response.statusCode == "NOSTATUS":
+                response.statusCode = "200"
+                response.statusPhrase = "OK"
+
+        return response
+
+
+    def setBadRequestBody(self, response, parsedRequest):
+        response.statusCode = "400"
+        response.statusPhrase = "BAD REQUEST"
+        contentType = self.getContentType(parsedRequest)
+        response.headerLines.append("Content-Type: " + str(contentType))
+        response.body = "Bad Request"
+        response.headerLines.append("Content-Length: " + str(len(response.body)))
+
+    def setNotImplementedBody(self, response, parsedRequest):
+        response.statusCode = "501"
+        response.statusPhrase = "NOT IMPLEMENTED"
+        contentType = self.getContentType(parsedRequest)
+        response.headerLines.append("Content-Type: " + str(contentType))
+        response.body = "Not Implemented"
+        response.headerLines.append("Content-Length: " + str(len(response.body)))
+
+        #Last test case is sending
+        #GET
+        #GET / HTTP/1.1\r\nHost: %s\r\n\r\n
+        # / HTTP/1.1\r\nHost: %s\r\n\r\n
