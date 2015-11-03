@@ -4,9 +4,12 @@ import socket
 import sys
 import traceback
 import time
+import os
 
 global cacheDict
+global timeoutDict
 cacheDict = {}
+timeoutDict = {}
 
 class ParsedRequest:
     def __init__(self):
@@ -29,7 +32,7 @@ class Response:
         self.time = ""
         self.statusCode = "NOSTATUS"
         self.statusPhrase = "NOPHRASE"
-        self.headerLines = ["Server: RADNESSSS"]
+        self.headerLines = ["Server: Grant's Web-Server"]
         self.body = ""
     def __str__(self):
         result = self.version + ' ' + self.statusCode + ' ' + self.statusPhrase + '\r\n'
@@ -43,7 +46,7 @@ class Response:
 class Poller:
     """ Polling server """
     def __init__(self,port):
-        print "-----------------------------------------------------------------------"
+        ###print "-----------------------------------------------------------------------"
         self.host = ""
         self.port = port
         self.open_socket()
@@ -55,10 +58,10 @@ class Poller:
         file = open("web.conf")
         global hostList
         global mediaList
-        global parameterList
+        global parameter
         hostList = []
         mediaList = []
-        parameterList = []
+        parameter = 0
             
         while 1:
             line = file.readline()
@@ -75,7 +78,7 @@ class Poller:
                 if type == "media":
                     mediaList.append(item)
                 if type == "parameter":
-                    parameterList.append(item)
+                    parameter = int(item.split()[1])
                     
 
     def open_socket(self):
@@ -87,6 +90,7 @@ class Poller:
             self.server.listen(5)
             self.server.setblocking(0)
         except socket.error, (value,message):
+            print "socket error in open socket"
             if self.server:
                 self.server.close()
             print "Could not open socket: " + message
@@ -99,10 +103,22 @@ class Poller:
         self.poller.register(self.server,self.pollmask)
         while True:
             # poll sockets
+            TimeBefore = time.time()
             try:
+                
                 fds = self.poller.poll(timeout=1)
+                
+                    
             except:
+                ###print "polling error?"
                 return
+
+            TimeAfter = time.time()
+            Time = TimeAfter-TimeBefore
+                
+            if Time > .5:
+                self.sweep()
+            
             for (fd,event) in fds:
                 # handle errors
                 if event & (select.POLLHUP | select.POLLERR):
@@ -130,10 +146,12 @@ class Poller:
     def handleServer(self):
 		
         # accept as many clients as possible
+        global timeoutDict
         while True:
             try:
                 (client,address) = self.server.accept()
             except socket.error, (value,message):
+                #print "socket error in server"
                 # if socket blocks because no clients are available,
                 # then return
                 if value == errno.EAGAIN or errno.EWOULDBLOCK:
@@ -143,6 +161,8 @@ class Poller:
             # set client socket to be non blocking
             client.setblocking(0)
             self.clients[client.fileno()] = client
+            timeoutDict[client.fileno()] = time.time()
+            ###print self.clients
             self.poller.register(client.fileno(),self.pollmask)
 
     def handleClient(self,fd):
@@ -150,6 +170,7 @@ class Poller:
         try:
             data = self.clients[fd].recv(self.size)
         except socket.error, (value,message):
+            #print "socket error in handleClient"
             # if no data is available, move on to another client
             if value == errno.EAGAIN or errno.EWOULDBLOCK:
                 return
@@ -157,9 +178,9 @@ class Poller:
             sys.exit()
 
         if data:
-
+            global timeoutDict
             global cacheDict
-
+            timeoutDict[fd] = time.time()
             if not fd in cacheDict:
                 cacheDict[fd] = ""
             
@@ -168,11 +189,11 @@ class Poller:
             if cacheDict[fd].endswith("\r\n\r\n"):
                     
                 parsedRequest = self.parseHttp(cacheDict[fd]) 
-                print str(parsedRequest)
+                #print str(parsedRequest)
                 
                 response = self.determineResponse(parsedRequest)
                 
-                print str(response)
+                #print str(response)
                 
                 self.clients[fd].send(str(response))
                 cacheDict[fd] = ""
@@ -182,6 +203,8 @@ class Poller:
             self.poller.unregister(fd)
             self.clients[fd].close()
             del self.clients[fd]
+            if fd in timeoutDict:
+                del timeoutDict[fd]
 
     def parseHttp(self, request):
 		
@@ -217,9 +240,9 @@ class Poller:
                 specificType = s.split()[1]
                 if contentType == generalType:
                     return specificType
-            return "INVALIDTYPE"
+            return ""
         else:
-            return "INVALIDTYPE"
+            return ""
             
             
     def get_time(self, t):
@@ -258,6 +281,7 @@ class Poller:
             except IOError:
                 response.statusCode = "404"
                 response.statusPhrase = "FILE NOT FOUND"
+                response.headerLines.append("Last Modified: FILE NOT FOUND")
 					
 					
             contentType = self.getContentType(parsedRequest)
@@ -269,15 +293,38 @@ class Poller:
             if response.body == "Forbidden\n":
                 response.statusCode = "403"
                 response.statusPhrase = "FORBIDDEN"
+                response.headerLines.append("Last Modified: FORBIDDEN")
                     
             response.headerLines.append("Content-Length: " + str(len(contents)))
 
             if response.statusCode == "NOSTATUS":
                 response.statusCode = "200"
                 response.statusPhrase = "OK"
+                mod_time = os.stat(parsedRequest.URL).st_mtime
+                response.headerLines.append("Last-Modified: " + str(self.get_time(mod_time)))
 
         return response
 
+    def sweep(self):
+        global timeoutDict
+        deleteList = []
+        #print timeoutDict
+        for key, value in timeoutDict.iteritems():
+            if key == self.server.fileno():
+                continue
+            currentTime = time.time()
+            global parameter
+            print currentTime - value
+            if (currentTime - value) > parameter:
+                deleteList.append(key)
+                if key in self.clients:
+                    self.poller.unregister(key)
+                    self.clients[key].close()
+                    del self.clients[key]
+        for i in deleteList:
+            if i in timeoutDict:
+                del timeoutDict[i]
+        return
 
     def setBadRequestBody(self, response, parsedRequest):
         response.statusCode = "400"
@@ -286,6 +333,7 @@ class Poller:
         response.headerLines.append("Content-Type: " + str(contentType))
         response.body = "Bad Request"
         response.headerLines.append("Content-Length: " + str(len(response.body)))
+        response.headerLines.append("Last-Modified: BAD REQUEST")
 
     def setNotImplementedBody(self, response, parsedRequest):
         response.statusCode = "501"
@@ -294,6 +342,7 @@ class Poller:
         response.headerLines.append("Content-Type: " + str(contentType))
         response.body = "Not Implemented"
         response.headerLines.append("Content-Length: " + str(len(response.body)))
+        response.headerLines.append("Last-Modified: NOT IMPLEMENTED")
 
         #Last test case is sending
         #GET
