@@ -314,7 +314,7 @@ class Poller:
                 continue
             currentTime = time.time()
             global parameter
-            print currentTime - value
+            #print currentTime - value
             if (currentTime - value) > parameter:
                 deleteList.append(key)
                 if key in self.clients:
